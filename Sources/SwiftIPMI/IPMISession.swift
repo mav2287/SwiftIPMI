@@ -68,17 +68,35 @@ final class IPMISession {
         // Generate a message tag for correlating request/response
         messageTag = UInt8.random(in: 0...255)
 
+        print("[SwiftIPMI] Step 1: Get Channel Auth Capabilities...")
         // Step 1: Get Channel Auth Capabilities (pre-session, unauthenticated)
         _ = try await sendPreSession(netfn: .application, command: 0x38,
                                       data: [0x8E, UInt8(privilege.rawValue)])
+        print("[SwiftIPMI] Step 1 complete.")
 
+        // Step 1b: Get Channel Cipher Suites (required by some BMCs before Open Session)
+        // cmd 0x54, data: channel(0x0E), payloadType(0x00=IPMI), listIndex(0x80=start)
+        print("[SwiftIPMI] Step 1b: Get Channel Cipher Suites...")
+        _ = try? await sendPreSession(netfn: .application, command: 0x54,
+                                       data: [0x0E, 0x00, 0x80])
+        print("[SwiftIPMI] Step 1b complete.")
+
+        print("[SwiftIPMI] Step 2: Open Session...")
         // Step 2: Open Session
         try await openSession(privilege: privilege)
+        print("[SwiftIPMI] Step 2 complete. BMC session ID: 0x\(String(format: "%08X", bmcSessionID))")
 
+        print("[SwiftIPMI] Step 3-4: RAKP handshake...")
         // Step 3-4: RAKP handshake
         try await rakpHandshake(privilege: privilege)
 
         isActive = true
+
+        // Step 5: Set Session Privilege Level (required to activate the requested privilege)
+        print("[SwiftIPMI] Step 5: Set Session Privilege Level to \(privilege.rawValue)...")
+        let privResponse = try await sendCommand(netfn: .application, command: 0x3B,
+                                                   data: [privilege.rawValue])
+        print("[SwiftIPMI] Step 5 complete. Privilege set to: \(privResponse.first ?? 0)")
     }
 
     /// Close the session gracefully.
@@ -195,23 +213,23 @@ final class IPMISession {
         // Bytes 4-7: Remote console session ID (little-endian)
         payload.append(contentsOf: withUnsafeBytes(of: sessionID.littleEndian) { Array($0) })
 
-        // Bytes 8-11: Authentication algorithm
-        // [payload_type(0x00), reserved, reserved, algorithm_id]
-        payload.append(contentsOf: [0x00, 0x00, 0x00, authAlgorithm.rawValue])
+        // Bytes 8-15: Authentication algorithm payload (8 bytes)
+        // [payload_type(0x00), reserved(2), payload_length(0x08), algorithm_id, reserved(3)]
+        payload.append(contentsOf: [0x00, 0x00, 0x00, 0x08, authAlgorithm.rawValue, 0x00, 0x00, 0x00])
 
-        // Bytes 12-15: Integrity algorithm
-        // [payload_type(0x01), reserved, reserved, algorithm_id]
-        payload.append(contentsOf: [0x01, 0x00, 0x00, integrityAlgorithm.rawValue])
+        // Bytes 16-23: Integrity algorithm payload (8 bytes)
+        // [payload_type(0x01), reserved(2), payload_length(0x08), algorithm_id, reserved(3)]
+        payload.append(contentsOf: [0x01, 0x00, 0x00, 0x08, integrityAlgorithm.rawValue, 0x00, 0x00, 0x00])
 
-        // Bytes 16-19: Confidentiality algorithm
-        // [payload_type(0x02), reserved, reserved, algorithm_id]
-        payload.append(contentsOf: [0x02, 0x00, 0x00, confidentialityAlgorithm.rawValue])
+        // Bytes 24-31: Confidentiality algorithm payload (8 bytes)
+        // [payload_type(0x02), reserved(2), payload_length(0x08), algorithm_id, reserved(3)]
+        payload.append(contentsOf: [0x02, 0x00, 0x00, 0x08, confidentialityAlgorithm.rawValue, 0x00, 0x00, 0x00])
 
         // Send wrapped in pre-session RMCP+ header (payload type 0x10)
         let response = try await sendPreSessionRMCPPlus(payloadType: 0x10, payload: payload)
 
-        // Parse Open Session Response
-        guard response.count >= 24 else {
+        // Parse Open Session Response (36 bytes: 4 header + 8 IDs + 8*3 algorithms)
+        guard response.count >= 36 else {
             throw IPMIError.invalidResponse("Open Session Response too short (\(response.count) bytes)")
         }
 

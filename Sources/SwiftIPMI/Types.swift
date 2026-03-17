@@ -154,8 +154,9 @@ public struct DeviceID: Sendable {
         deviceID = data[0]
         deviceRevision = data[1] & 0x0F
         firmwareMajor = data[2] & 0x7F
-        firmwareMinor = data[3]
+        firmwareMinor = data[3]  // BCD encoded
         let ver = data[4]
+        // IPMI version is BCD: low nibble = major, high nibble = minor
         ipmiVersion = "\(ver & 0x0F).\(ver >> 4)"
         manufacturerID = UInt32(data[6]) | (UInt32(data[7]) << 8) | (UInt32(data[8]) << 16)
         productID = UInt16(data[9]) | (UInt16(data[10]) << 8)
@@ -166,9 +167,10 @@ public struct DeviceID: Sendable {
         manufacturerID == 63
     }
 
-    /// Firmware version string.
+    /// Firmware version string (minor is BCD encoded).
     public var firmwareVersion: String {
-        "\(firmwareMajor).\(firmwareMinor)"
+        let minorBCD = (firmwareMinor >> 4) * 10 + (firmwareMinor & 0x0F)
+        return "\(firmwareMajor).\(minorBCD)"
     }
 }
 
